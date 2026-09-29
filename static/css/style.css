@@ -1,7 +1,7 @@
 :root {
     --bg-color: #121212;
     --surface-color: #1e1e1e;
-    --primary-color: #f5c518; /* IMDb Yellow */
+    --primary-color: #f5c518; /* Clipcast Yellow */
     --text-color: #ffffff;
     --text-muted: #aaaaaa;
     --border-color: #333333;
@@ -27,6 +27,25 @@ body {
     width: 100%;
     max-width: 800px;
     padding: 2rem 1rem;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+main {
+    flex: 1;
+}
+
+footer {
+    text-align: center;
+    padding: 2rem 0 0.5rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+footer a {
+    color: var(--text-muted);
+    text-decoration: underline;
 }
 
 header {
@@ -35,14 +54,23 @@ header {
 }
 
 h1 {
-    font-size: 2rem;
+    font-size: 2.5rem;
+    font-weight: 800;
     color: var(--primary-color);
+    letter-spacing: -1px;
+    margin-bottom: 0.4rem;
+}
+
+.tagline {
+    color: var(--text-muted);
+    font-size: 1rem;
+    line-height: 1.5;
     margin-bottom: 0.5rem;
 }
 
-#statusText {
+.status {
     color: var(--text-muted);
-    font-size: 0.9rem;
+    font-size: 0.85rem;
 }
 
 .search-container {

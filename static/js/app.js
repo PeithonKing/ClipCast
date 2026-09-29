@@ -223,8 +223,8 @@ function renderMovies(movies, timeMs) {
         return;
     }
     
-    let html = `<div class="meta">Found ${movies.length} movies in ${timeMs.toFixed(0)} ms.</div>`;
-    html += '<ul class="movie-list">';
+    console.log(`Found ${movies.length} movies in ${timeMs.toFixed(0)} ms.`);
+    let html = '<ul class="movie-list">';
     movies.forEach(m => {
         html += `
             <li>

@@ -1,28 +1,58 @@
-# IMDb Search Engine
+# Clipcast
 
-A fully static, lightning-fast IMDb search engine running entirely in the browser using [DuckDB-Wasm](https://duckdb.org/docs/api/wasm/overview).
+**Saw actors in a YouTube Short or a random clip, but have no idea what movie it is?**
 
-## Architecture
-- **Frontend:** Pure HTML/JS/CSS. No build steps (Vite/Webpack). Zero server required.
-- **Database:** DuckDB-Wasm executes SQL queries on compressed `.parquet` files via HTTP Range Requests.
-- **CI/CD:** GitHub Actions automatically downloads the massive 6GB raw IMDb TSV files, crunches them into a highly optimized 67MB Parquet payload using Python (`uv`), and deploys directly to GitHub Pages without polluting the git history.
+You know the faces. You just don't know the title. Google doesn't help. IMDb's own search can't do it. You end up in mercy of the comments section or a Reddit thread asking strangers.
 
-## Search Ranking
-Uses a custom composite search ranking algorithm:
-- Initial fuzzy string match via `jaro_winkler_similarity()`.
-- String similarity is cubed to exponentially punish typos.
-- Weighted against a pre-calculated `popularityScore` (Lead/Co-Lead credits only) via `log10()`.
+**Clipcast solves this.** Type the names of the actors you recognise from the clip. It immediately shows every movie they appeared in together. Two actors, three actors, five, the more you add, the shorter and more precise the list gets.
+
+---
+
+## How It Works
+
+1. Start typing an actor's name. A fuzzy search autocomplete appears with their role count and IMDb ID.
+2. Click to add them as a chip.
+3. Add more actors.
+4. The shared movie list updates instantly as you add or remove actors.
+5. Every movie title links directly to its IMDb page.
+
+---
+
+## What Makes It Different
+
+Most tools that do actor-based movie search:
+- Only support **exactly two** actors.
+- Require **perfect spelling**.
+- Run on a **backend server** that can go down, rate-limit you, or disappear.
+
+Clipcast supports any number of actors, has typo-tolerant fuzzy search, and runs **100% in your browser** locally, so it never goes down and never tracks you.
+
+---
+
+## Technical Architecture
+
+The entire database engine runs inside the browser using [DuckDB-Wasm](https://duckdb.org/docs/api/wasm/overview). The IMDb dataset is pre-processed into compressed `.parquet` files (67MB total, down from 6.3GB of raw TSVs) using a Python pipeline. DuckDB-Wasm reads these files via HTTP Range Requests, meaning it fetches only the data it needs for each query.
+
+**Search Ranking** uses a composite score:
+```
+pow(jaro_winkler_similarity(name, query), 3) * log10(popularityScore + 50)
+```
+The JW score is cubed to aggressively punish loose matches. Popularity is derived only from lead/co-lead billing credits (`ordering <= 4`) to prevent character actors with 1000 background cameos from drowning out legitimate stars.
+
+**CI/CD:** GitHub Actions downloads the raw IMDb `.gz` files, runs the Python pipeline, and deploys to GitHub Pages, all without a single commit to the repository. The site auto-refreshes on every push to `main` and on the 1st of every month.
+
+---
 
 ## Local Development
-To run the web app locally, you need a local server (because DuckDB-Wasm relies on HTTP Range requests which fail on `file://` protocols).
 
-1. Generate the databases:
 ```bash
-uv run generate_db.py
-```
+# Step 1: Download data and generate the Parquet databases
+./download_data.sh
 
-2. Serve the app:
-```bash
+# Step 2: Serve the app (DuckDB-Wasm requires HTTP, not file://)
 python3 -m http.server 8000
 ```
-Open `http://localhost:8000` in your browser.
+
+Open `http://localhost:8000`.
+
+> **uv users:** `uv run generate_db.py` works directly without setting up a virtual environment.
