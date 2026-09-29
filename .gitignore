@@ -1,0 +1,16 @@
+# IMDb raw datasets (Heavy)
+*.tsv
+*.tsv.gz
+*.gz
+
+# DuckDB generated files
+static/data/*.parquet
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# OS Files
+.DS_Store

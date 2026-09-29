@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IMDb Actor Intersection</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Actor Intersection Finder</h1>
+            <p id="statusText">Loading Engine...</p>
+        </header>
+
+        <main>
+            <div class="search-container">
+                <div id="chipsContainer" class="chips-container"></div>
+                
+                <div class="input-wrapper">
+                    <input type="text" id="searchBox" placeholder="Type an actor's name..." disabled autocomplete="off" spellcheck="false">
+                    <div id="searchSpinner" class="spinner"></div>
+                    <div id="autocompleteList" class="autocomplete-list"></div>
+                </div>
+            </div>
+
+            <div id="movieResults" class="results-container">
+                <div class="empty-state">Search and select actors to find their shared movies.</div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Load the app as a module so we can use top-level imports -->
+    <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>
