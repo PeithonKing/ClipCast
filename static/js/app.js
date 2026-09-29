@@ -38,7 +38,10 @@ async function initDB() {
 }
 
 // Helper to get full URL for duckdb http range requests
-const getParquetUrl = (filename) => `${window.location.origin}/static/data/${filename}`;
+// Safely construct URLs regardless of whether hosted at root or in a subdirectory (like /clipcast/)
+let basePath = window.location.pathname;
+if (!basePath.endsWith('/')) basePath += '/';
+const getParquetUrl = (filename) => `${window.location.origin}${basePath}static/data/${filename}`;
 
 let debounceTimer;
 els.searchBox.addEventListener('input', (e) => {
