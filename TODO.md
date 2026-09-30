@@ -12,19 +12,19 @@
 
 ## 3. Interactive Results Table
 - [x] Upgrade the current static movie list into a robust, interactive Data Table.
-- [x] **Columns:** Poster, Title, Year, Genres, IMDb Rating. (Poster pending TMDB)
+- [x] **Columns:** Poster, Title, Year, Genres, IMDb Rating.
 - [x] **Features:** Click headers to sort (e.g., chronologically by Year, or by highest Rating). Add a text input to instantly filter results by Genre or Title.
 - [x] *Note:* Requires adding `title.ratings.tsv.gz` to the `generate_db.py` pipeline.
 
 ## 4. Dynamic Movie Posters (TMDB API)
-- [ ] Hook into the free TMDB (The Movie Database) client-side API.
-- [ ] Dynamically fetch and display official movie posters in the results table.
-- [ ] *Note:* IMDb's non-commercial dataset legally excludes images, so TMDB is required for this visual upgrade.
+- [x] Hook into the free TMDB (The Movie Database) API during GitHub Actions CI.
+- [x] Pre-fetch and cache official movie posters and actor avatars into dedicated Parquet files to prevent client-side rate limits and API key exposure.
+- [x] Implemented graceful 2-phase UI rendering (placeholders -> async images) and responsive grid cards.
 
 ## 5. TV Shows & Miniseries Support
-- [ ] Currently, the database is strictly filtered to `titleType = 'movie'`.
-- [ ] Add support for `tvSeries` and `tvMiniSeries` in the DuckDB generation script.
-- [ ] Add a UI toggle switch to let users filter between Movies and TV Shows.
+- [x] Currently, the database is strictly filtered to `titleType = 'movie'`.
+- [x] Add support for `tvSeries` and `tvMiniSeries` in the DuckDB generation script.
+- [x] Add a UI toggle switch to let users filter between Movies and TV Shows.
 
 ## 6. Director & Writer Support
 - [x] Expand the search beyond just actors/actresses to include directors and writers.

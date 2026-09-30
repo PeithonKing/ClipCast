@@ -42,6 +42,8 @@ jobs:
           python-version: "3.12"
 
       - name: Run Full Data Pipeline (Download + Generate)
+        env:
+          TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
         run: |
           mkdir -p static/data
           bash download_data.sh

@@ -5,6 +5,9 @@ const selectedActors = new Map(); // nconst -> { name }
 
 const PARQUET_FILES = ['basics.parquet', 'principals.parquet', 'names.parquet'];
 const OPFS_DIR = 'clipcast-data';
+const POSTERS_BASE = 'https://clipcast.peithonking.com/static/data';
+const TMDB_IMG = 'https://image.tmdb.org/t/p';
+
 
 const els = {
     searchBox: document.getElementById('searchBox'),
@@ -15,6 +18,8 @@ const els = {
     statusText: document.getElementById('statusText'),
     offlineBtn: document.getElementById('offlineBtn'),
     offlineBtnText: document.getElementById('offlineBtnText'),
+    filterMovies: document.getElementById('filterMovies'),
+    filterTV: document.getElementById('filterTV'),
     downloadToast: document.getElementById('downloadToast'),
     toastProgressBar: document.getElementById('toastProgressBar'),
     toastProgressText: document.getElementById('toastProgressText'),
@@ -110,6 +115,29 @@ async function checkOPFS() {
 }
 
 // --- DuckDB Init ---
+
+function initFilters() {
+    // Load from LocalStorage
+    const savedMovies = localStorage.getItem('clipcast_filter_movies');
+    const savedTV = localStorage.getItem('clipcast_filter_tv');
+    
+    if (savedMovies !== null) els.filterMovies.checked = savedMovies === 'true';
+    if (savedTV !== null) els.filterTV.checked = savedTV === 'true';
+
+    // Prevent unchecking both
+    const updateFilters = (changedEl, otherEl) => {
+        if (!els.filterMovies.checked && !els.filterTV.checked) {
+            otherEl.checked = true; // Force the other one to stay checked
+        }
+        localStorage.setItem('clipcast_filter_movies', els.filterMovies.checked);
+        localStorage.setItem('clipcast_filter_tv', els.filterTV.checked);
+        if (selectedActors.size > 0) runIntersectionQuery();
+    };
+
+    els.filterMovies.addEventListener('change', () => updateFilters(els.filterMovies, els.filterTV));
+    els.filterTV.addEventListener('change', () => updateFilters(els.filterTV, els.filterMovies));
+}
+
 async function initDB() {
     els.statusText.innerText = 'Initializing Engine...';
     try {
@@ -296,7 +324,7 @@ async function searchActors(query, queryId) {
         let q;
         if (isIdSearch) {
             q = `
-                SELECT nconst, primaryName, birthYear, primaryProfession, movieCount, popularityScore 
+                SELECT nconst, primaryName, primaryProfession, movieCount, popularityScore 
                 FROM read_parquet('${getQueryUrl('names.parquet')}')
                 WHERE nconst ILIKE '${safeQuery}%'
                 ORDER BY popularityScore DESC, movieCount DESC
@@ -305,7 +333,7 @@ async function searchActors(query, queryId) {
         } else {
             q = `
                 SELECT 
-                    nconst, primaryName, birthYear, primaryProfession, movieCount, popularityScore,
+                    nconst, primaryName, primaryProfession, movieCount, popularityScore,
                     jaro_winkler_similarity(lower(primaryName), lower('${safeQuery}')) AS jw_score,
                     (pow(jaro_winkler_similarity(lower(primaryName), lower('${safeQuery}')), 3) * log10(COALESCE(popularityScore, 0) + 50)) AS final_score
                 FROM read_parquet('${getQueryUrl('names.parquet')}')
@@ -329,11 +357,14 @@ async function searchActors(query, queryId) {
 
 function renderAutocomplete(rows) {
     els.autocompleteList.innerHTML = '';
-    rows.forEach(row => {
-        if (selectedActors.has(row.nconst)) return;
+    const visibleRows = rows.filter(row => !selectedActors.has(row.nconst));
+    visibleRows.forEach(row => {
         const div = document.createElement('div');
         div.className = 'autocomplete-item';
         div.innerHTML = `
+            <div class="actor-avatar-placeholder" id="avatar-${row.nconst}">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            </div>
             <div class="actor-info">
                 <div class="actor-header">
                     <span class="actor-name">${row.primaryName}</span>
@@ -360,6 +391,59 @@ function renderAutocomplete(rows) {
         };
         els.autocompleteList.appendChild(div);
     });
+
+    // Phase 2: async photo fetch for the rendered rows (non-blocking)
+    if (visibleRows.length > 0) {
+        const nconsts = visibleRows.map(r => r.nconst);
+        fetchActorPhotos(nconsts);
+    }
+}
+
+async function fetchActorPhotos(nconsts) {
+    const placeholders = nconsts.map(id => `'${id}'`).join(', ');
+    try {
+        const q = `
+            SELECT nconst, profile_path
+            FROM read_parquet('${POSTERS_BASE}/actor_posters.parquet')
+            WHERE nconst IN (${placeholders}) AND profile_path IS NOT NULL
+        `;
+        const result = await conn.query(q);
+        const photos = Object.fromEntries(
+            result.toArray().map(r => r.toJSON()).map(r => [r.nconst, r.profile_path])
+        );
+        // Inject photos into already-rendered DOM
+        for (const [nconst, profile_path] of Object.entries(photos)) {
+            const placeholder = document.getElementById(`avatar-${nconst}`);
+            if (placeholder) {
+                placeholder.innerHTML = `<img src="${TMDB_IMG}/w45${profile_path}" loading="lazy" class="actor-photo" alt="" onerror="this.parentElement.innerHTML='<svg width=20 height=20 viewBox=0_0_24_24 fill=none stroke=currentColor stroke-width=1.5><path_d=M20_21v-2a4_4_0_0_0-4-4H8a4_4_0_0_0-4_4v2/><circle_cx=12_cy=7_r=4/></svg>'">`;
+            }
+        }
+    } catch (e) {
+        // actor_posters.parquet may not exist yet - silently degrade
+    }
+}
+
+
+async function fetchMoviePosters(tconsts) {
+    if (!tconsts || tconsts.length === 0) return;
+    const placeholders = tconsts.map(id => `'${id}'`).join(', ');
+    try {
+        const q = `
+            SELECT tconst, poster_path
+            FROM read_parquet('${POSTERS_BASE}/movie_posters.parquet')
+            WHERE tconst IN (${placeholders}) AND poster_path IS NOT NULL
+        `;
+        const result = await conn.query(q);
+        const posters = Object.fromEntries(
+            result.toArray().map(r => r.toJSON()).map(r => [r.tconst, r.poster_path])
+        );
+        for (const [tconst, poster_path] of Object.entries(posters)) {
+            const cell = document.querySelector(`.poster-cell[data-tconst="${tconst}"]`);
+            if (cell) {
+                cell.innerHTML = `<img src="${TMDB_IMG}/w92${poster_path}" loading="lazy" class="movie-poster-thumb" alt="">`;
+            }
+        }
+    } catch {}
 }
 
 function addActorChip(nconst, name) {
@@ -384,18 +468,51 @@ function renderChips() {
         const chip = document.createElement('div');
         chip.className = 'chip';
         chip.innerHTML = `
-            ${data.name}
-            <a href="https://www.imdb.com/name/${nconst}/" target="_blank" class="chip-link" title="Open IMDb Profile">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-                    <polyline points="15 3 21 3 21 9"></polyline>
-                    <line x1="10" y1="14" x2="21" y2="3"></line>
-                </svg>
+            <a href="https://www.imdb.com/name/${nconst}/" target="_blank" class="chip-avatar-link" title="Open IMDb Profile">
+                <div id="chip-avatar-${nconst}" class="chip-avatar-wrapper">
+                    <svg class="chip-avatar" style="padding:16px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                </div>
+                <div class="chip-avatar-overlay">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                        <polyline points="15 3 21 3 21 9"></polyline>
+                        <line x1="10" y1="14" x2="21" y2="3"></line>
+                    </svg>
+                </div>
             </a>
+            <div style="display: flex; align-items: center; justify-content: center; gap: 4px;">
+                <span style="font-size: 0.95rem; font-weight: 600; line-height: 1.2;">${data.name}</span>
+            </div>
             <span class="close" onclick="removeActorChip('${nconst}')">&times;</span>
         `;
         els.chipsContainer.appendChild(chip);
     });
+    
+    if (selectedActors.size > 0) {
+        fetchChipPhotos(Array.from(selectedActors.keys()));
+    }
+}
+
+async function fetchChipPhotos(nconsts) {
+    if (!nconsts || nconsts.length === 0) return;
+    const placeholders = nconsts.map(id => `'${id}'`).join(', ');
+    try {
+        const q = `
+            SELECT nconst, profile_path
+            FROM read_parquet('${POSTERS_BASE}/actor_posters.parquet')
+            WHERE nconst IN (${placeholders}) AND profile_path IS NOT NULL
+        `;
+        const result = await conn.query(q);
+        const photos = Object.fromEntries(
+            result.toArray().map(r => r.toJSON()).map(r => [r.nconst, r.profile_path])
+        );
+        for (const [nconst, profile_path] of Object.entries(photos)) {
+            const wrapper = document.getElementById(`chip-avatar-${nconst}`);
+            if (wrapper) {
+                wrapper.innerHTML = `<img src="${TMDB_IMG}/w185${profile_path}" class="chip-avatar" alt="">`;
+            }
+        }
+    } catch {}
 }
 
 async function runIntersectionQuery() {
@@ -403,13 +520,19 @@ async function runIntersectionQuery() {
     els.movieResults.innerHTML = '<div class="loading">Finding shared movies...</div>';
     const actorIds = Array.from(selectedActors.keys());
     const placeholders = actorIds.map(id => `'${id}'`).join(', ');
+    const types = [];
+    if (els.filterMovies.checked) types.push("'movie'", "'tvMovie'");
+    if (els.filterTV.checked) types.push("'tvSeries'", "'tvMiniSeries'");
+    const typeFilter = types.join(", ");
+
     const q = `
         SELECT 
             b.tconst,
             b.primaryTitle, 
             b.startYear,
             b.genres,
-            b.rating
+            b.rating,
+            b.titleType
         FROM read_parquet('${getQueryUrl('basics.parquet')}') b
         JOIN (
             SELECT tconst
@@ -418,14 +541,28 @@ async function runIntersectionQuery() {
             GROUP BY tconst
             HAVING COUNT(DISTINCT nconst) = ${actorIds.length}
         ) p ON b.tconst = p.tconst
+        WHERE b.titleType IN (${typeFilter})
         ORDER BY b.startYear DESC
     `;
     try {
         const t0 = performance.now();
-        const result = await conn.query(q);
+        let result;
+        try {
+            result = await conn.query(q);
+        } catch (e) {
+            if (e.message && e.message.includes('titleType')) {
+                // Old parquet without titleType column (pre-TV-support) - fallback, movies only
+                const qFallback = q.replace(`WHERE b.titleType IN (${typeFilter})`, '');
+                result = await conn.query(qFallback);
+            } else {
+                throw e;
+            }
+        }
         const t1 = performance.now();
         const rows = result.toArray().map(r => r.toJSON());
         renderMovies(rows, t1 - t0);
+        // Phase 2: inject posters asynchronously after table renders
+        fetchMoviePosters(rows.map(r => r.tconst));
     } catch (e) {
         console.error("Intersection query failed:", e);
         els.movieResults.innerHTML = '<div class="error">Query failed. Check console.</div>';
@@ -491,6 +628,7 @@ function renderMovies(movies, timeMs) {
             <table class="movie-table">
                 <thead>
                     <tr>
+                        <th class="poster-col"></th>
                         <th onclick="sortTable('primaryTitle')" class="${thClass('primaryTitle')}">Title</th>
                         <th onclick="sortTable('startYear')" class="${thClass('startYear')}">Year</th>
                         <th onclick="sortTable('genres')" class="${thClass('genres')}">Genres</th>
@@ -507,8 +645,10 @@ function renderMovies(movies, timeMs) {
             const ratingStr = m.rating ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="#fbbf24" style="vertical-align: -2px; margin-right: 4px;"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>${m.rating.toFixed(1)}` : '-';
             html += `
                 <tr>
+                    <td class="poster-cell" data-tconst="${m.tconst}"><div class="poster-placeholder"></div></td>
                     <td>
                         <a href="https://www.imdb.com/title/${m.tconst}/" target="_blank" class="table-title-link">${m.primaryTitle}</a>
+                        ${m.titleType && m.titleType.includes('tv') ? '<span class="tv-badge">TV</span>' : ''}
                     </td>
                     <td>${m.startYear || '-'}</td>
                     <td><span class="genre-tag">${(m.genres || '-').replace(/,/g, ', ')}</span></td>
@@ -551,5 +691,6 @@ window.sortTable = function(col) {
     renderMovies();
 };
 
+initFilters();
 initDB();
 window.removeActorChip = removeActorChip;

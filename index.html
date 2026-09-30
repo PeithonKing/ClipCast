@@ -61,14 +61,23 @@
         </header>
 
         <main>
-            <div class="search-container">
-                <div id="chipsContainer" class="chips-container"></div>
-                
-                <div class="input-wrapper">
-                    <input type="text" id="searchBox" placeholder="Type an actor's name or IMDb ID..." disabled autocomplete="off" spellcheck="false">
-                    <div id="searchSpinner" class="spinner"></div>
-                    <div id="autocompleteList" class="autocomplete-list"></div>
-                </div>
+            <div id="chipsContainer" class="chips-container"></div>
+
+            <div class="input-wrapper">
+                <input type="text" id="searchBox" placeholder="Type an actor's name or IMDb ID..." disabled autocomplete="off" spellcheck="false">
+                <div id="searchSpinner" class="spinner"></div>
+                <div id="autocompleteList" class="autocomplete-list"></div>
+            </div>
+
+            <div class="filter-toggles" style="display: flex; gap: 16px; margin-top: 12px; margin-bottom: 32px; justify-content: center;">
+                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text-color); font-size: 0.9rem;">
+                    <input type="checkbox" id="filterMovies" checked style="accent-color: var(--primary-color); width: 16px; height: 16px; cursor: pointer;">
+                    Movies
+                </label>
+                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; color: var(--text-color); font-size: 0.9rem;">
+                    <input type="checkbox" id="filterTV" checked style="accent-color: var(--primary-color); width: 16px; height: 16px; cursor: pointer;">
+                    TV Shows
+                </label>
             </div>
 
             <div id="movieResults" class="results-container">
