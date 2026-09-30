@@ -4,7 +4,7 @@
 *.gz
 
 # DuckDB generated files
-static/data/*.parquet
+static/data/
 
 # Python
 __pycache__/

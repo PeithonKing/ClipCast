@@ -80,4 +80,18 @@ con.execute("""
 con.execute("COPY names TO 'static/data/names.parquet' (FORMAT PARQUET, COMPRESSION 'ZSTD')")
 print(f"  -> names.parquet saved in {time.time() - start:.2f}s")
 
+# Write metadata.json with exact file sizes for the UI
+import json
+files = ['basics.parquet', 'principals.parquet', 'names.parquet']
+metadata = {}
+total = 0
+for f in files:
+    size = os.path.getsize(f'static/data/{f}')
+    metadata[f] = size
+    total += size
+metadata['total'] = total
+with open('static/data/metadata.json', 'w') as mf:
+    json.dump(metadata, mf)
+print(f"  -> metadata.json written ({total / 1024 / 1024:.1f} MB total)")
+
 print("--- Generation Complete ---")

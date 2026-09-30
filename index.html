@@ -74,7 +74,25 @@
             <div id="movieResults" class="results-container">
                 <div class="empty-state">Add two or more actors above to find their shared movies.</div>
             </div>
+
+            <div class="offline-btn-wrapper">
+                <button id="offlineBtn" style="display:none;">
+                    <span id="offlineBtnText">⚡ Download Offline Engine for Speed</span>
+                </button>
+            </div>
         </main>
+
+        <!-- Floating download progress toast -->
+        <div id="downloadToast" class="download-toast">
+            <div class="toast-header">
+                <span class="toast-title">⚡ Downloading Offline Engine</span>
+                <button id="toastCancelBtn" class="toast-cancel" title="Cancel download">&times;</button>
+            </div>
+            <div class="toast-progress-track">
+                <div id="toastProgressBar" class="toast-progress-bar"></div>
+            </div>
+            <div id="toastProgressText" class="toast-progress-text">Starting...</div>
+        </div>
 
         <footer>
             <p>Made with ♥ by <a href="https://cv.peithonking.com" target="_blank">PeithonKing</a> &bull; <a href="https://github.com/PeithonKing/clipcast" target="_blank">GitHub</a></p>
