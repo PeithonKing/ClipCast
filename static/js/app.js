@@ -38,10 +38,83 @@ function getQueryUrl(filename) {
     return getParquetUrl(filename);
 }
 
+// --- OPFS Helpers & Versioning ---
+let remoteMetadata = null;
+let filesToDownload = [];
+let totalBytesToDownload = 0;
+
+async function fetchMetadata() {
+    try {
+        const res = await fetch(getParquetUrl('metadata.json'));
+        remoteMetadata = await res.json();
+    } catch {
+        remoteMetadata = null;
+    }
+}
+
+function updateFooterTimestamp(unixTs, isOffline) {
+    const el = document.getElementById('dbTimestamp');
+    if (el && unixTs) {
+        const date = new Date(unixTs * 1000);
+        const prefix = isOffline ? '⚡ Offline Database active' : 'Database last updated';
+        el.innerText = `${prefix}: ${date.toLocaleDateString()} (Updates monthly)`;
+    }
+}
+
+async function checkOPFS() {
+    filesToDownload = [];
+    totalBytesToDownload = 0;
+    
+    try {
+        const root = await navigator.storage.getDirectory();
+        const dir = await root.getDirectoryHandle(OPFS_DIR, { create: false });
+        
+        const localMetaStr = localStorage.getItem('clipcast_metadata');
+        const localMeta = localMetaStr ? JSON.parse(localMetaStr) : null;
+        
+        if (!remoteMetadata) return false;
+        
+        let allValid = true;
+        for (const f of PARQUET_FILES) {
+            try {
+                await dir.getFileHandle(f, { create: false });
+                if (!localMeta || !localMeta.files || !localMeta.files[f] || localMeta.files[f].hash !== remoteMetadata.files[f].hash) {
+                    allValid = false;
+                    filesToDownload.push(f);
+                    totalBytesToDownload += remoteMetadata.files[f].size;
+                }
+            } catch {
+                allValid = false;
+                filesToDownload.push(f);
+                totalBytesToDownload += remoteMetadata.files[f].size;
+            }
+        }
+        
+        // Cleanup orphaned files
+        if (!allValid) {
+            for await (const [name, handle] of dir.entries()) {
+                if (!PARQUET_FILES.includes(name)) {
+                    await dir.removeEntry(name).catch(()=>{});
+                }
+            }
+        }
+        
+        return allValid;
+    } catch {
+        if (remoteMetadata) {
+            filesToDownload = [...PARQUET_FILES];
+            totalBytesToDownload = remoteMetadata.total_bytes || 0;
+        }
+        return false;
+    }
+}
+
 // --- DuckDB Init ---
 async function initDB() {
     els.statusText.innerText = 'Initializing Engine...';
     try {
+        await fetchMetadata();
+        
         const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
         const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
         const worker_url = URL.createObjectURL(
@@ -54,16 +127,29 @@ async function initDB() {
         URL.revokeObjectURL(worker_url);
         conn = await db.connect();
 
-        // Check if OPFS cache is already populated
         const opfsReady = await checkOPFS();
         if (opfsReady) {
             await registerOPFSWithDuckDB();
             dataSource = 'opfs';
             els.statusText.innerText = '⚡ Offline Mode — Ready.';
             hideOfflineButton();
+            const localMetaStr = localStorage.getItem('clipcast_metadata');
+            if (localMetaStr) {
+                updateFooterTimestamp(JSON.parse(localMetaStr).compiled_at, true);
+            }
         } else {
             els.statusText.innerText = 'Ready. Search for actors.';
-            await loadOfflineButtonSize();
+            if (remoteMetadata && remoteMetadata.compiled_at) {
+                updateFooterTimestamp(remoteMetadata.compiled_at, false);
+            }
+            if (totalBytesToDownload > 0) {
+                const mb = (totalBytesToDownload / 1024 / 1024).toFixed(0);
+                const isUpdate = localStorage.getItem('clipcast_metadata') !== null;
+                els.offlineBtnText.innerText = isUpdate 
+                    ? `⚡ Update Offline Engine (${mb} MB)` 
+                    : `⚡ Download Offline Engine for Speed (${mb} MB)`;
+                els.offlineBtn.style.display = 'inline-flex';
+            }
         }
 
         els.searchBox.disabled = false;
@@ -71,34 +157,6 @@ async function initDB() {
     } catch (e) {
         els.statusText.innerText = 'Error loading engine.';
         console.error(e);
-    }
-}
-
-// --- OPFS Helpers ---
-async function checkOPFS() {
-    try {
-        const root = await navigator.storage.getDirectory();
-        const dir = await root.getDirectoryHandle(OPFS_DIR, { create: false });
-        for (const f of PARQUET_FILES) {
-            await dir.getFileHandle(f, { create: false });
-        }
-        return true;
-    } catch {
-        return false;
-    }
-}
-
-async function loadOfflineButtonSize() {
-    try {
-        const res = await fetch(getParquetUrl('metadata.json'));
-        const meta = await res.json();
-        const mb = (meta.total / 1024 / 1024).toFixed(0);
-        els.offlineBtnText.innerText = `⚡ Download Offline Engine for Speed (${mb} MB)`;
-        els.offlineBtn.style.display = 'inline-flex';
-    } catch {
-        // metadata.json missing, show button with unknown size
-        els.offlineBtnText.innerText = '⚡ Download Offline Engine for Speed';
-        els.offlineBtn.style.display = 'inline-flex';
     }
 }
 
@@ -122,22 +180,14 @@ async function startOfflineDownload() {
         const dir = await root.getDirectoryHandle(OPFS_DIR, { create: true });
 
         let totalDownloaded = 0;
-        let grandTotal = 0;
+        let grandTotal = totalBytesToDownload;
 
-        // Fetch metadata for accurate progress
-        try {
-            const meta = await fetch(getParquetUrl('metadata.json')).then(r => r.json());
-            grandTotal = meta.total;
-        } catch { grandTotal = 0; }
-
-        for (const filename of PARQUET_FILES) {
+        for (const filename of filesToDownload) {
             if (downloadAbortController.signal.aborted) break;
 
             const response = await fetch(getParquetUrl(filename), {
                 signal: downloadAbortController.signal
             });
-            const contentLength = parseInt(response.headers.get('Content-Length') || '0');
-            if (grandTotal === 0) grandTotal += contentLength;
 
             const reader = response.body.getReader();
             const fileHandle = await dir.getFileHandle(filename, { create: true });
@@ -158,11 +208,22 @@ async function startOfflineDownload() {
         }
 
         if (!downloadAbortController.signal.aborted) {
-            // Register OPFS files with DuckDB
+            if (remoteMetadata) {
+                localStorage.setItem('clipcast_metadata', JSON.stringify(remoteMetadata));
+            }
+            
+            // Delete orphaned files again just to be safe
+            for await (const [name, handle] of dir.entries()) {
+                if (!PARQUET_FILES.includes(name)) {
+                    await dir.removeEntry(name).catch(()=>{});
+                }
+            }
+            
             await registerOPFSWithDuckDB();
             dataSource = 'opfs';
             els.statusText.innerText = '⚡ Offline Mode — Ready.';
             els.downloadToast.classList.remove('visible');
+            if (remoteMetadata) updateFooterTimestamp(remoteMetadata.compiled_at, true);
             console.log('Offline mode activated. All searches now run locally.');
         }
     } catch (e) {
@@ -189,12 +250,15 @@ function cancelOfflineDownload() {
         downloadAbortController.abort();
     }
     els.downloadToast.classList.remove('visible');
-    // Clean up partial OPFS files
-    navigator.storage.getDirectory().then(root => {
-        root.removeEntry(OPFS_DIR, { recursive: true }).catch(() => {});
-    });
-    // Restore the button
-    loadOfflineButtonSize();
+    // Restore the button if there are files to download
+    if (totalBytesToDownload > 0) {
+        const mb = (totalBytesToDownload / 1024 / 1024).toFixed(0);
+        const isUpdate = localStorage.getItem('clipcast_metadata') !== null;
+        els.offlineBtnText.innerText = isUpdate 
+            ? `⚡ Update Offline Engine (${mb} MB)` 
+            : `⚡ Download Offline Engine for Speed (${mb} MB)`;
+        els.offlineBtn.style.display = 'inline-flex';
+    }
 }
 
 function updateToastProgress(downloaded, total) {
@@ -209,19 +273,23 @@ function updateToastProgress(downloaded, total) {
 
 // --- Search ---
 let debounceTimer;
+let activeQueryId = 0;
 els.searchBox.addEventListener('input', (e) => {
     clearTimeout(debounceTimer);
+    els.searchSpinner.style.display = 'none'; // Hide spinner while typing (debouncing)
+    activeQueryId++; // Invalidate any running query
+    
     const query = e.target.value.trim();
     if (query.length < 2) {
         els.autocompleteList.innerHTML = '';
-        els.searchSpinner.style.display = 'none';
         return;
     }
-    els.searchSpinner.style.display = 'block';
-    debounceTimer = setTimeout(() => searchActors(query), 300);
+    debounceTimer = setTimeout(() => searchActors(query, activeQueryId), 700);
 });
 
-async function searchActors(query) {
+async function searchActors(query, queryId) {
+    if (queryId !== activeQueryId) return; // Abort if another keystroke happened
+    els.searchSpinner.style.display = 'block'; // Show spinner ONLY when request actually fires
     try {
         const isIdSearch = query.toLowerCase().startsWith('nm');
         const safeQuery = query.replace(/'/g, "''");
@@ -246,12 +314,16 @@ async function searchActors(query) {
             `;
         }
         const result = await conn.query(q);
+        if (queryId !== activeQueryId) return;
+        if (els.searchBox.value.trim().length < 2) return;
         const rows = result.toArray().map(r => r.toJSON());
         renderAutocomplete(rows);
     } catch (e) {
         console.error("Search error:", e);
     } finally {
-        els.searchSpinner.style.display = 'none';
+        if (queryId === activeQueryId) {
+            els.searchSpinner.style.display = 'none';
+        }
     }
 }
 
@@ -336,7 +408,8 @@ async function runIntersectionQuery() {
             b.tconst,
             b.primaryTitle, 
             b.startYear,
-            b.genres
+            b.genres,
+            b.rating
         FROM read_parquet('${getQueryUrl('basics.parquet')}') b
         JOIN (
             SELECT tconst
@@ -359,27 +432,124 @@ async function runIntersectionQuery() {
     }
 }
 
+
+let currentMovies = [];
+let sortCol = 'startYear';
+let sortAsc = false;
+let filterText = '';
+
 function renderMovies(movies, timeMs) {
-    if (movies.length === 0) {
+    if (movies) currentMovies = movies;
+    
+    if (currentMovies.length === 0) {
         els.movieResults.innerHTML = '<div class="no-results">No shared movies found.</div>';
         return;
     }
-    console.log(`Found ${movies.length} movies in ${timeMs.toFixed(0)} ms.`);
-    let html = '<ul class="movie-list">';
-    movies.forEach(m => {
-        html += `
-            <li>
-                <div class="movie-title">
-                    <a href="https://www.imdb.com/title/${m.tconst}/" target="_blank">${m.primaryTitle}</a> 
-                    <span class="movie-year">(${m.startYear || 'N/A'})</span>
-                </div>
-                <div class="movie-genre">${m.genres || ''}</div>
-            </li>
-        `;
+    
+    if (timeMs) console.log(`Found ${currentMovies.length} movies in ${timeMs.toFixed(0)} ms.`);
+    
+    let filtered = currentMovies;
+    if (filterText) {
+        const ft = filterText.toLowerCase();
+        filtered = currentMovies.filter(m => 
+            (m.primaryTitle && m.primaryTitle.toLowerCase().includes(ft)) || 
+            (m.genres && m.genres.toLowerCase().includes(ft))
+        );
+    }
+    
+    filtered.sort((a, b) => {
+        let valA = a[sortCol];
+        let valB = b[sortCol];
+        
+        if (sortCol === 'startYear') {
+            valA = valA ? parseInt(valA) : 0;
+            valB = valB ? parseInt(valB) : 0;
+        } else if (sortCol === 'rating') {
+            valA = valA ? parseFloat(valA) : 0;
+            valB = valB ? parseFloat(valB) : 0;
+        } else {
+            valA = valA ? valA.toString().toLowerCase() : '';
+            valB = valB ? valB.toString().toLowerCase() : '';
+        }
+        
+        if (valA < valB) return sortAsc ? -1 : 1;
+        if (valA > valB) return sortAsc ? 1 : -1;
+        return 0;
     });
-    html += '</ul>';
+
+    const thClass = (col) => {
+        if (sortCol === col) return sortAsc ? 'sort-asc' : 'sort-desc';
+        return '';
+    };
+
+    let html = `
+        <div class="table-toolbar">
+            <input type="text" id="tableFilter" placeholder="Filter by Title or Genre..." value="${filterText}">
+            <div class="result-count">${filtered.length} ${filtered.length === 1 ? 'Movie' : 'Movies'}</div>
+        </div>
+        <div class="table-responsive">
+            <table class="movie-table">
+                <thead>
+                    <tr>
+                        <th onclick="sortTable('primaryTitle')" class="${thClass('primaryTitle')}">Title</th>
+                        <th onclick="sortTable('startYear')" class="${thClass('startYear')}">Year</th>
+                        <th onclick="sortTable('genres')" class="${thClass('genres')}">Genres</th>
+                        <th onclick="sortTable('rating')" class="${thClass('rating')}">Rating</th>
+                    </tr>
+                </thead>
+                <tbody>
+    `;
+    
+    if (filtered.length === 0) {
+        html += `<tr><td colspan="4" class="no-results">No matches for filter.</td></tr>`;
+    } else {
+        filtered.forEach(m => {
+            const ratingStr = m.rating ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="#fbbf24" style="vertical-align: -2px; margin-right: 4px;"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>${m.rating.toFixed(1)}` : '-';
+            html += `
+                <tr>
+                    <td>
+                        <a href="https://www.imdb.com/title/${m.tconst}/" target="_blank" class="table-title-link">${m.primaryTitle}</a>
+                    </td>
+                    <td>${m.startYear || '-'}</td>
+                    <td><span class="genre-tag">${(m.genres || '-').replace(/,/g, ', ')}</span></td>
+                    <td class="rating-cell">${ratingStr}</td>
+                </tr>
+            `;
+        });
+    }
+    
+    html += `
+                </tbody>
+            </table>
+        </div>
+    `;
+    
     els.movieResults.innerHTML = html;
+    
+    const filterInput = document.getElementById('tableFilter');
+    if (filterInput) {
+        filterInput.addEventListener('input', (e) => {
+            filterText = e.target.value;
+            renderMovies();
+            // Restore focus
+            const newFilter = document.getElementById('tableFilter');
+            if (newFilter) {
+                newFilter.focus();
+                newFilter.setSelectionRange(filterText.length, filterText.length);
+            }
+        });
+    }
 }
+
+window.sortTable = function(col) {
+    if (sortCol === col) {
+        sortAsc = !sortAsc;
+    } else {
+        sortCol = col;
+        sortAsc = (col === 'primaryTitle'); // default title to asc, others desc
+    }
+    renderMovies();
+};
 
 initDB();
 window.removeActorChip = removeActorChip;
