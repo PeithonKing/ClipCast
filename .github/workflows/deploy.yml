@@ -41,18 +41,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Download IMDb Datasets
+      - name: Run Full Data Pipeline (Download + Generate)
         run: |
-          echo "Downloading latest IMDb datasets..."
-          wget -q -c https://datasets.imdbws.com/name.basics.tsv.gz
-          wget -q -c https://datasets.imdbws.com/title.basics.tsv.gz
-          wget -q -c https://datasets.imdbws.com/title.principals.tsv.gz
-
-      - name: Generate Parquet Databases
-        run: |
-          echo "Running DuckDB data pipeline..."
           mkdir -p static/data
-          uv run generate_db.py
+          bash download_data.sh
 
       - name: Clean up Raw Data
         run: |
