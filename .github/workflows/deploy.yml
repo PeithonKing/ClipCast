@@ -44,6 +44,9 @@ jobs:
       - name: Run Full Data Pipeline (Download + Generate)
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+          MAX_THREADS: 30
+          MOVIE_LIMIT_MINS: 180
+          ACTOR_LIMIT_MINS: 60
         run: |
           mkdir -p static/data
           bash download_data.sh
