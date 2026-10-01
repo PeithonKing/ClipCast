@@ -10,6 +10,7 @@
 
 import duckdb
 import time
+import math
 import os
 import sys
 import json
@@ -175,30 +176,33 @@ def tmdb_fetch(imdb_id, api_key, max_retries=6):
                 return r.json()
             elif r.status_code == 429:
                 with backoff_lock:
-                    wait = min(64, 2 ** attempt)
-                    new_backoff = time.time() + wait
-                    if new_backoff > global_backoff_until:
-                        global_backoff_until = new_backoff
+                    if global_backoff_until <= time.time():
+                        wait = min(64, 2 ** attempt)
+                        global_backoff_until = time.time() + wait
                         if is_ci: print(f"  [RATE LIMIT] backing off for {wait}s", flush=True)
-                time.sleep(wait)
+                    else:
+                        wait = global_backoff_until - time.time()
+                if wait > 0: time.sleep(wait)
             elif r.status_code == 404:
                 return None
             else:
                 with backoff_lock:
-                    wait = min(64, 2 ** attempt)
-                    new_backoff = time.time() + wait
-                    if new_backoff > global_backoff_until:
-                        global_backoff_until = new_backoff
+                    if global_backoff_until <= time.time():
+                        wait = min(64, 2 ** attempt)
+                        global_backoff_until = time.time() + wait
                         if is_ci: print(f"  [ERROR {r.status_code}] backing off for {wait}s", flush=True)
-                time.sleep(wait)
+                    else:
+                        wait = global_backoff_until - time.time()
+                if wait > 0: time.sleep(wait)
         except requests.RequestException as e:
             with backoff_lock:
-                wait = min(64, 2 ** attempt)
-                new_backoff = time.time() + wait
-                if new_backoff > global_backoff_until:
-                        global_backoff_until = new_backoff
-                        if is_ci: print(f"  [NETWORK ERROR] backing off for {wait}s", flush=True)
-            time.sleep(wait)
+                if global_backoff_until <= time.time():
+                    wait = min(64, 2 ** attempt)
+                    global_backoff_until = time.time() + wait
+                    if is_ci: print(f"  [NETWORK ERROR] backing off for {wait}s", flush=True)
+                else:
+                    wait = global_backoff_until - time.time()
+            if wait > 0: time.sleep(wait)
     return None
 
 def process_movie(item, api_key):
@@ -233,7 +237,10 @@ def print_ci_log(fetched, total, start_time, limit_mins):
     el_str = f"{int(elapsed) // 3600:02d}:{(int(elapsed) % 3600) // 60:02d}"
     lim_str = f"{limit_mins // 60:02d}:{limit_mins % 60:02d}"
     eta_str = f"{int(eta_secs) // 3600:02d}:{(int(eta_secs) % 3600) // 60:02d}"
-    print(f"  [LOG] {fetched}/{total} {el_str} {lim_str} {eta_str} {speed:.2f}req/s", flush=True)
+    percent = (fetched / total) * 100
+    f_k = math.ceil(fetched / 1000)
+    t_k = math.ceil(total / 1000)
+    print(f"  [LOG] {f_k}K/{t_k}K ({percent:.1f}%) {el_str} {lim_str} {eta_str} {speed:.2f}req/s", flush=True)
 
 def safe_insert(con, table, cols, vals):
     """Insert a row, escaping string values for DuckDB."""
@@ -292,6 +299,7 @@ with tqdm(total=len(missing_movies), desc="Movies", unit="req", disable=is_ci) a
             # Write chunk results to disk immediately, clearing batch
             if batch:
                 con.executemany("INSERT INTO movie_posters (tconst, poster_path) VALUES (?, ?)", batch)
+                con.execute("COPY movie_posters TO 'static/data/movie_posters.parquet' (FORMAT PARQUET, COMPRESSION 'ZSTD')")
                 if is_ci and fetched % 1000 == 0:
                     print_ci_log(fetched, len(missing_movies), movie_start_time, movie_limit_mins)
             
@@ -349,6 +357,7 @@ with tqdm(total=len(missing_actors), desc="Actors", unit="req", disable=is_ci) a
                 
             if batch:
                 con.executemany("INSERT INTO actor_posters (nconst, profile_path) VALUES (?, ?)", batch)
+                con.execute("COPY actor_posters TO 'static/data/actor_posters.parquet' (FORMAT PARQUET, COMPRESSION 'ZSTD')")
                 if is_ci and fetched % 1000 == 0:
                     print_ci_log(fetched, len(missing_actors), actor_start_time, actor_limit_mins)
             

@@ -3,6 +3,22 @@ name: Update IMDb Data & Deploy
 on:
   # Allow manual trigger via GitHub UI
   workflow_dispatch:
+    inputs:
+      max_threads:
+        description: 'Max Threads (Concurrency)'
+        required: true
+        default: '25'
+        type: string
+      movie_limit_mins:
+        description: 'Movie Fetch Time Limit (mins)'
+        required: true
+        default: '180'
+        type: string
+      actor_limit_mins:
+        description: 'Actor Fetch Time Limit (mins)'
+        required: true
+        default: '60'
+        type: string
   # Automatically run on push to main branch
   push:
     branches:
@@ -44,9 +60,9 @@ jobs:
       - name: Run Full Data Pipeline (Download + Generate)
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
-          MAX_THREADS: 30
-          MOVIE_LIMIT_MINS: 180
-          ACTOR_LIMIT_MINS: 60
+          MAX_THREADS: ${{ github.event.inputs.max_threads || '25' }}
+          MOVIE_LIMIT_MINS: ${{ github.event.inputs.movie_limit_mins || '180' }}
+          ACTOR_LIMIT_MINS: ${{ github.event.inputs.actor_limit_mins || '60' }}
         run: |
           mkdir -p static/data
           bash download_data.sh
