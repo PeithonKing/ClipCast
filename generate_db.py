@@ -13,6 +13,9 @@ import time
 import os
 import sys
 import json
+import os
+is_ci = os.environ.get("CI") == "true"
+
 import hashlib
 import requests
 import urllib.request
@@ -176,6 +179,7 @@ def tmdb_fetch(imdb_id, api_key, max_retries=6):
                     new_backoff = time.time() + wait
                     if new_backoff > global_backoff_until:
                         global_backoff_until = new_backoff
+                        if is_ci: print(f"  [RATE LIMIT] backing off for {wait}s", flush=True)
                 time.sleep(wait)
             elif r.status_code == 404:
                 return None
@@ -185,13 +189,15 @@ def tmdb_fetch(imdb_id, api_key, max_retries=6):
                     new_backoff = time.time() + wait
                     if new_backoff > global_backoff_until:
                         global_backoff_until = new_backoff
+                        if is_ci: print(f"  [ERROR {r.status_code}] backing off for {wait}s", flush=True)
                 time.sleep(wait)
         except requests.RequestException as e:
             with backoff_lock:
                 wait = min(64, 2 ** attempt)
                 new_backoff = time.time() + wait
                 if new_backoff > global_backoff_until:
-                    global_backoff_until = new_backoff
+                        global_backoff_until = new_backoff
+                        if is_ci: print(f"  [NETWORK ERROR] backing off for {wait}s", flush=True)
             time.sleep(wait)
     return None
 
@@ -219,6 +225,16 @@ def chunk_iterable(iterable, size):
     for i in range(0, len(iterable), size):
         yield iterable[i:i + size]
 
+def print_ci_log(fetched, total, start_time, limit_mins):
+    elapsed = time.time() - start_time
+    if elapsed == 0: elapsed = 0.001
+    speed = fetched / elapsed
+    eta_secs = (total - fetched) / speed
+    el_str = f"{int(elapsed) // 3600:02d}:{(int(elapsed) % 3600) // 60:02d}"
+    lim_str = f"{limit_mins // 60:02d}:{limit_mins % 60:02d}"
+    eta_str = f"{int(eta_secs) // 3600:02d}:{(int(eta_secs) % 3600) // 60:02d}"
+    print(f"  [LOG] {fetched}/{total} {el_str} {lim_str} {eta_str} {speed:.2f}req/s", flush=True)
+
 def safe_insert(con, table, cols, vals):
     """Insert a row, escaping string values for DuckDB."""
     parts = []
@@ -234,7 +250,8 @@ def safe_insert(con, table, cols, vals):
 max_threads = int(os.environ.get('MAX_THREADS', 30))
 movie_limit_mins = int(os.environ.get('MOVIE_LIMIT_MINS', 180))
 print(f"\n4a: Fetching movie posters (cap: {movie_limit_mins} mins)...")
-MOVIE_DEADLINE = time.time() + movie_limit_mins * 60
+movie_start_time = time.time()
+MOVIE_DEADLINE = movie_start_time + movie_limit_mins * 60
 
 try_load_existing_parquet(
     con, 'movie_posters', 'movie_posters.parquet',
@@ -275,6 +292,8 @@ with tqdm(total=len(missing_movies), desc="Movies", unit="req", disable=is_ci) a
             # Write chunk results to disk immediately, clearing batch
             if batch:
                 con.executemany("INSERT INTO movie_posters (tconst, poster_path) VALUES (?, ?)", batch)
+                if is_ci and fetched % 1000 == 0:
+                    print_ci_log(fetched, len(missing_movies), movie_start_time, movie_limit_mins)
             
             # Explicitly delete the dict of futures so Python garbage collects it immediately
             del future_to_item
@@ -290,7 +309,8 @@ print(f"  -> movie_posters.parquet saved ({total_m:,} entries, {with_poster:,} w
 # Step 4b: Actor Posters (1 hour cap)
 actor_limit_mins = int(os.environ.get('ACTOR_LIMIT_MINS', 60))
 print(f"\n4b: Fetching actor photos (cap: {actor_limit_mins} mins)...")
-ACTOR_DEADLINE = time.time() + actor_limit_mins * 60
+actor_start_time = time.time()
+ACTOR_DEADLINE = actor_start_time + actor_limit_mins * 60
 
 try_load_existing_parquet(
     con, 'actor_posters', 'actor_posters.parquet',
@@ -329,6 +349,8 @@ with tqdm(total=len(missing_actors), desc="Actors", unit="req", disable=is_ci) a
                 
             if batch:
                 con.executemany("INSERT INTO actor_posters (nconst, profile_path) VALUES (?, ?)", batch)
+                if is_ci and fetched % 1000 == 0:
+                    print_ci_log(fetched, len(missing_actors), actor_start_time, actor_limit_mins)
             
             del future_to_item
             
