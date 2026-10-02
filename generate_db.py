@@ -254,8 +254,8 @@ def safe_insert(con, table, cols, vals):
     con.execute(f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join(parts)})")
 
 # Step 4a: Movie Posters (3 hour cap)
-max_threads = int(os.environ.get('MAX_THREADS', 30))
-movie_limit_mins = int(os.environ.get('MOVIE_LIMIT_MINS', 180))
+max_threads = int(os.environ.get('MAX_THREADS', 20))
+movie_limit_mins = int(os.environ.get('MOVIE_LIMIT_MINS', 150))
 print(f"\n4a: Fetching movie posters (cap: {movie_limit_mins} mins)...")
 movie_start_time = time.time()
 MOVIE_DEADLINE = movie_start_time + movie_limit_mins * 60
@@ -315,7 +315,7 @@ with_poster = con.execute("SELECT COUNT(*) FROM movie_posters WHERE poster_path 
 print(f"  -> movie_posters.parquet saved ({total_m:,} entries, {with_poster:,} with images).")
 
 # Step 4b: Actor Posters (1 hour cap)
-actor_limit_mins = int(os.environ.get('ACTOR_LIMIT_MINS', 60))
+actor_limit_mins = int(os.environ.get('ACTOR_LIMIT_MINS', 150))
 print(f"\n4b: Fetching actor photos (cap: {actor_limit_mins} mins)...")
 actor_start_time = time.time()
 ACTOR_DEADLINE = actor_start_time + actor_limit_mins * 60

@@ -7,17 +7,17 @@ on:
       max_threads:
         description: 'Max Threads (Concurrency)'
         required: true
-        default: '25'
+        default: '20'
         type: string
       movie_limit_mins:
         description: 'Movie Fetch Time Limit (mins)'
         required: true
-        default: '180'
+        default: '150'
         type: string
       actor_limit_mins:
         description: 'Actor Fetch Time Limit (mins)'
         required: true
-        default: '60'
+        default: '150'
         type: string
   # Automatically run on push to main branch
   push:
@@ -60,9 +60,9 @@ jobs:
       - name: Run Full Data Pipeline (Download + Generate)
         env:
           TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
-          MAX_THREADS: ${{ github.event.inputs.max_threads || '25' }}
-          MOVIE_LIMIT_MINS: ${{ github.event.inputs.movie_limit_mins || '180' }}
-          ACTOR_LIMIT_MINS: ${{ github.event.inputs.actor_limit_mins || '60' }}
+          MAX_THREADS: ${{ github.event.inputs.max_threads || '20' }}
+          MOVIE_LIMIT_MINS: ${{ github.event.inputs.movie_limit_mins || '150' }}
+          ACTOR_LIMIT_MINS: ${{ github.event.inputs.actor_limit_mins || '150' }}
         run: |
           mkdir -p static/data
           bash download_data.sh
