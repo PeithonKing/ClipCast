@@ -14,9 +14,6 @@ import math
 import os
 import sys
 import json
-import os
-is_ci = os.environ.get("CI") == "true"
-
 import hashlib
 import requests
 import urllib.request
@@ -25,24 +22,64 @@ import threading
 from tqdm import tqdm
 import tempfile
 
-# Load .env if present (local dev)
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
     pass
 
+is_ci = os.environ.get("CI") == "true"
 SITE_URL = "https://clipcast.peithonking.com/static/data"
 TMDB_BASE = "https://api.themoviedb.org/3"
-
-print("--- Starting IMDB Parquet Generation ---")
 os.makedirs('static/data', exist_ok=True)
 
+def download_file(url, filename):
+    if os.path.exists(filename):
+        print(f"  [CACHE] {filename} already exists.", flush=True)
+        return
+    print(f"  [DOWNLOADING] {url} -> {filename}", flush=True)
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            total_size = int(response.headers.get('content-length', 0))
+            with open(filename, 'wb') as file, tqdm(
+                desc=filename, total=total_size, unit='iB',
+                unit_scale=True, unit_divisor=1024, disable=is_ci
+            ) as bar:
+                while True:
+                    chunk = response.read(8192)
+                    if not chunk: break
+                    file.write(chunk)
+                    bar.update(len(chunk))
+    except Exception as e:
+        print(f"  [ERROR] Failed to download {url}: {e}", flush=True)
+
+print("--- Starting Clipcast V2 Database Generation ---")
+print("\n--- 1/4: Downloading Source Data ---")
+imdb_base = "https://datasets.imdbws.com"
+for f in ['title.basics.tsv.gz', 'title.ratings.tsv.gz', 'title.principals.tsv.gz', 'name.basics.tsv.gz']:
+    download_file(f"{imdb_base}/{f}", f)
+
+print("\n--- 2/4: Processing with DuckDB ---")
 con = duckdb.connect(':memory:')
 
-# 1. BASICS (Movies + TV Shows)
-print("1/3: Filtering basics...")
-start = time.time()
+# Try to load existing V2 cache to reuse image paths
+print("  Attempting to load live caches...", flush=True)
+try:
+    download_file(f"{SITE_URL}/movies.parquet", "old_movies.parquet")
+    con.execute("CREATE TABLE old_movies AS SELECT * FROM read_parquet('old_movies.parquet')")
+except Exception:
+    print("  [WARN] old_movies.parquet not found. Starting fresh.")
+    con.execute("CREATE TABLE old_movies (tconst VARCHAR, poster_path VARCHAR)")
+
+try:
+    download_file(f"{SITE_URL}/actor_details.parquet", "old_actor_details.parquet")
+    con.execute("CREATE TABLE old_actors AS SELECT * FROM read_parquet('old_actor_details.parquet')")
+except Exception:
+    print("  [WARN] old_actor_details.parquet not found. Starting fresh.")
+    con.execute("CREATE TABLE old_actors (nconst VARCHAR, profile_path VARCHAR)")
+
+print("  Processing titles (basics)...", flush=True)
 con.execute("""
     CREATE TABLE basics AS
     SELECT b.tconst, b.primaryTitle, b.startYear, b.genres, r.averageRating as rating, b.titleType
@@ -50,117 +87,73 @@ con.execute("""
     LEFT JOIN read_csv_auto('title.ratings.tsv.gz', delim='\t', nullstr='\\N', quote='') r ON b.tconst = r.tconst
     WHERE b.titleType IN ('movie', 'tvMovie', 'tvSeries', 'tvMiniSeries')
 """)
-con.execute("COPY basics TO 'static/data/basics.parquet' (FORMAT PARQUET, COMPRESSION 'ZSTD')")
-print(f"  -> basics.parquet saved in {time.time() - start:.2f}s")
 
-# 2. PRINCIPALS (Filtered cast/crew linked to valid titles)
-print("2/3: Filtering principals...")
-start = time.time()
+print("  Processing roles (principals)...", flush=True)
 con.execute("""
     CREATE TABLE principals_raw AS
     SELECT
-        p.tconst,
-        p.nconst,
-        TRY_CAST(p.ordering AS INTEGER) as ordering,
-        p.category
+        p.tconst, p.nconst, TRY_CAST(p.ordering AS INTEGER) as ordering, p.category
     FROM read_csv_auto('title.principals.tsv.gz', delim='\t', nullstr='\\N', quote='') p
     INNER JOIN basics b ON p.tconst = b.tconst
     WHERE p.category IN ('actor', 'actress', 'director', 'writer', 'producer', 'composer')
 """)
-con.execute("CREATE TABLE principals AS SELECT tconst, nconst FROM principals_raw")
-con.execute("COPY principals TO 'static/data/principals.parquet' (FORMAT PARQUET, COMPRESSION 'ZSTD')")
-print(f"  -> principals.parquet saved in {time.time() - start:.2f}s")
 
-# 3. NAMES (with popularity score)
-print("3/3: Filtering names and scoring...")
-start = time.time()
+print("  Aggregating actor stats...", flush=True)
 con.execute("""
     CREATE TABLE actor_counts AS
     SELECT
         nconst,
-        COUNT(tconst) as movieCount,
-        SUM(CASE WHEN (ordering <= 4 AND category IN ('actor', 'actress')) OR category IN ('director', 'writer', 'producer', 'composer') THEN 1 ELSE 0 END) as popularityScore
+        CAST(COUNT(DISTINCT tconst) AS INTEGER) as movieCount,
+        CAST(SUM(CASE WHEN (ordering <= 4 AND category IN ('actor', 'actress')) OR category IN ('director', 'writer', 'producer', 'composer') THEN 1 ELSE 0 END) AS INTEGER) as popularityScore,
+        string_agg(DISTINCT tconst, ',') as movies
     FROM principals_raw
     GROUP BY nconst
 """)
+
+print("  Building search_index...", flush=True)
 con.execute("""
-    CREATE TABLE names AS
-    SELECT
-        n.nconst,
-        n.primaryName,
-        n.primaryProfession,
-        c.movieCount,
-        c.popularityScore
+    CREATE TABLE search_index AS
+    SELECT n.nconst, n.primaryName, c.popularityScore
     FROM read_csv_auto('name.basics.tsv.gz', delim='\t', nullstr='\\N', quote='') n
     INNER JOIN actor_counts c ON n.nconst = c.nconst
-    WHERE (
-        n.primaryProfession LIKE '%actor%' OR
-        n.primaryProfession LIKE '%actress%' OR
-        n.primaryProfession LIKE '%director%' OR
-        n.primaryProfession LIKE '%writer%' OR
-        n.primaryProfession LIKE '%producer%' OR
-        n.primaryProfession LIKE '%composer%'
-    )
+    WHERE n.primaryProfession LIKE '%actor%' OR n.primaryProfession LIKE '%actress%' OR n.primaryProfession LIKE '%director%' OR n.primaryProfession LIKE '%writer%' OR n.primaryProfession LIKE '%producer%' OR n.primaryProfession LIKE '%composer%'
 """)
-con.execute("COPY names TO 'static/data/names.parquet' (FORMAT PARQUET, COMPRESSION 'ZSTD')")
-print(f"  -> names.parquet saved in {time.time() - start:.2f}s")
+con.execute("COPY search_index TO 'static/data/search_index.parquet' (FORMAT PARQUET, COMPRESSION 'ZSTD')")
 
-# Write metadata.json (only the 3 OPFS-cached files)
-def get_file_hash(filepath):
-    h = hashlib.sha256()
-    with open(filepath, 'rb') as f:
-        while chunk := f.read(8192):
-            h.update(chunk)
-    return h.hexdigest()
+print("  Building actor_details...", flush=True)
+con.execute("""
+    CREATE TABLE actor_details AS
+    SELECT n.nconst, n.primaryProfession, c.movieCount, COALESCE(oa.profile_path, NULL) as profile_path, c.movies
+    FROM read_csv_auto('name.basics.tsv.gz', delim='\t', nullstr='\\N', quote='') n
+    INNER JOIN actor_counts c ON n.nconst = c.nconst
+    LEFT JOIN old_actors oa ON n.nconst = oa.nconst
+    WHERE n.primaryProfession LIKE '%actor%' OR n.primaryProfession LIKE '%actress%' OR n.primaryProfession LIKE '%director%' OR n.primaryProfession LIKE '%writer%' OR n.primaryProfession LIKE '%producer%' OR n.primaryProfession LIKE '%composer%'
+""")
+con.execute("COPY actor_details TO 'static/data/actor_details.parquet' (FORMAT PARQUET, COMPRESSION 'ZSTD')")
 
-core_files = ['basics.parquet', 'principals.parquet', 'names.parquet']
-metadata = {"compiled_at": int(time.time()), "total_bytes": 0, "files": {}}
-for f in core_files:
-    filepath = f'static/data/{f}'
-    size = os.path.getsize(filepath)
-    metadata["files"][f] = {"size": size, "hash": get_file_hash(filepath)}
-    metadata["total_bytes"] += size
+print("  Building movies...", flush=True)
+con.execute("""
+    CREATE TABLE movies AS
+    SELECT b.tconst, b.primaryTitle, b.startYear, b.genres, b.rating, b.titleType, COALESCE(om.poster_path, NULL) as poster_path
+    FROM basics b
+    LEFT JOIN old_movies om ON b.tconst = om.tconst
+""")
+con.execute("COPY movies TO 'static/data/movies.parquet' (FORMAT PARQUET, COMPRESSION 'ZSTD')")
 
-with open('static/data/metadata.json', 'w') as mf:
-    json.dump(metadata, mf)
-print(f"  -> metadata.json written ({metadata['total_bytes'] / 1024 / 1024:.1f} MB total)")
-print("--- Core Generation Complete ---")
 
 # -----------------------------------------------------------------------
-# TMDB POSTER FETCHING (Only runs if TMDB_API_KEY is available)
+# TMDB POSTER FETCHING
 # -----------------------------------------------------------------------
 api_key = os.environ.get('TMDB_API_KEY')
 if not api_key:
     print("\nNo TMDB_API_KEY found. Skipping poster generation.")
-    print("Set TMDB_API_KEY in .env (local) or GitHub Secrets (CI).")
     sys.exit(0)
 
-print("\n--- Starting TMDB Poster Generation ---")
-
-def try_load_existing_parquet(con, table_name, remote_filename, columns_ddl):
-    """Pull the currently-deployed parquet as checkpoint. Falls back to empty table."""
-    url = f"{SITE_URL}/{remote_filename}"
-    try:
-        print(f"  Pulling existing {remote_filename} from live site...", flush=True)
-        req = urllib.request.Request(url, headers={'User-Agent': 'ClipCast-CI/1.0'})
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = r.read()
-        tmp = tempfile.NamedTemporaryFile(suffix='.parquet', delete=False)
-        tmp.write(data)
-        tmp.close()
-        con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM read_parquet('{tmp.name}')")
-        os.unlink(tmp.name)
-        count = con.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
-        print(f"  Loaded {count:,} existing entries from live site.", flush=True)
-    except Exception as e:
-        print(f"  Could not load existing data: {e}. Starting fresh.", flush=True)
-        con.execute(f"CREATE TABLE {table_name} ({columns_ddl})")
-
+print("\n--- 3/4: TMDB Poster Generation ---")
 global_backoff_until = 0
 backoff_lock = threading.Lock()
 
 def tmdb_fetch(imdb_id, api_key, max_retries=6):
-    """Fetch TMDB find result with global multithreaded exponential backoff."""
     global global_backoff_until
     url = f"{TMDB_BASE}/find/{imdb_id}"
     params = {"external_source": "imdb_id", "api_key": api_key}
@@ -179,9 +172,6 @@ def tmdb_fetch(imdb_id, api_key, max_retries=6):
                     if global_backoff_until <= time.time():
                         wait = min(64, 2 ** attempt)
                         global_backoff_until = time.time() + wait
-                        if is_ci: print(f"  [RATE LIMIT] backing off for {wait}s", flush=True)
-                    else:
-                        wait = global_backoff_until - time.time()
                 if wait > 0: time.sleep(wait)
             elif r.status_code == 404:
                 return None
@@ -190,92 +180,52 @@ def tmdb_fetch(imdb_id, api_key, max_retries=6):
                     if global_backoff_until <= time.time():
                         wait = min(64, 2 ** attempt)
                         global_backoff_until = time.time() + wait
-                        if is_ci: print(f"  [ERROR {r.status_code}] backing off for {wait}s", flush=True)
-                    else:
-                        wait = global_backoff_until - time.time()
                 if wait > 0: time.sleep(wait)
-        except requests.RequestException as e:
+        except requests.RequestException:
             with backoff_lock:
                 if global_backoff_until <= time.time():
                     wait = min(64, 2 ** attempt)
                     global_backoff_until = time.time() + wait
-                    if is_ci: print(f"  [NETWORK ERROR] backing off for {wait}s", flush=True)
-                else:
-                    wait = global_backoff_until - time.time()
             if wait > 0: time.sleep(wait)
     return None
 
 def process_movie(item, api_key):
-    tconst, _ = item
+    tconst = item[0]
     data = tmdb_fetch(tconst, api_key)
-    poster_path = None
+    poster_path = "" # Empty string sentinel for "checked, not found"
     if data:
         results = data.get('movie_results') or data.get('tv_results') or []
         if results:
-            poster_path = results[0].get('poster_path')
+            poster_path = results[0].get('poster_path') or ""
     return tconst, poster_path
 
 def process_actor(item, api_key):
     nconst = item[0]
     data = tmdb_fetch(nconst, api_key)
-    profile_path = None
+    profile_path = "" # Empty string sentinel for "checked, not found"
     if data:
         person_r = data.get('person_results') or []
         if person_r:
-            profile_path = person_r[0].get('profile_path')
+            profile_path = person_r[0].get('profile_path') or ""
     return nconst, profile_path
 
 def chunk_iterable(iterable, size):
     for i in range(0, len(iterable), size):
         yield iterable[i:i + size]
 
-def print_ci_log(fetched, total, start_time, limit_mins):
-    elapsed = time.time() - start_time
-    if elapsed == 0: elapsed = 0.001
-    speed = fetched / elapsed
-    eta_secs = (total - fetched) / speed
-    el_str = f"{int(elapsed) // 3600:02d}:{(int(elapsed) % 3600) // 60:02d}"
-    lim_str = f"{limit_mins // 60:02d}:{limit_mins % 60:02d}"
-    eta_str = f"{int(eta_secs) // 3600:02d}:{(int(eta_secs) % 3600) // 60:02d}"
-    percent = (fetched / total) * 100
-    f_k = math.ceil(fetched / 1000)
-    t_k = math.ceil(total / 1000)
-    print(f"  [LOG] {f_k}K/{t_k}K ({percent:.1f}%) {el_str} {lim_str} {eta_str} {speed:.2f}req/s", flush=True)
-
-def safe_insert(con, table, cols, vals):
-    """Insert a row, escaping string values for DuckDB."""
-    parts = []
-    for v in vals:
-        if v is None:
-            parts.append("NULL")
-        else:
-            escaped = str(v).replace("'", "''")
-            parts.append(f"'{escaped}'")
-    con.execute(f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join(parts)})")
-
-# Step 4a: Movie Posters (3 hour cap)
 max_threads = int(os.environ.get('MAX_THREADS', 20))
+
+# 3a. Movies
 movie_limit_mins = int(os.environ.get('MOVIE_LIMIT_MINS', 150))
-print(f"\n4a: Fetching movie posters (cap: {movie_limit_mins} mins)...")
+print(f"\n3a: Fetching movie posters (cap: {movie_limit_mins} mins)...")
 movie_start_time = time.time()
 MOVIE_DEADLINE = movie_start_time + movie_limit_mins * 60
 
-try_load_existing_parquet(
-    con, 'movie_posters', 'movie_posters.parquet',
-    'tconst VARCHAR, poster_path VARCHAR'
-)
-
-missing_movies = con.execute("""
-    SELECT b.tconst, b.titleType
-    FROM basics b
-    LEFT JOIN movie_posters mp ON b.tconst = mp.tconst
-    WHERE mp.tconst IS NULL
-    ORDER BY b.tconst
-""").fetchall()
-
+missing_movies = con.execute("SELECT tconst FROM movies WHERE poster_path IS NULL ORDER BY tconst").fetchall()
 print(f"  {len(missing_movies):,} titles still need poster lookup.", flush=True)
+con.execute("CREATE TABLE tmp_movies (tconst VARCHAR, poster_path VARCHAR)")
+
 fetched = 0
-is_ci = os.environ.get("CI") == "true"
 with tqdm(total=len(missing_movies), desc="Movies", unit="req", disable=is_ci) as pbar:
     cap_reached = False
     for chunk in chunk_iterable(missing_movies, 10000):
@@ -287,7 +237,7 @@ with tqdm(total=len(missing_movies), desc="Movies", unit="req", disable=is_ci) a
             for future in concurrent.futures.as_completed(future_to_item):
                 if time.time() > MOVIE_DEADLINE:
                     executor.shutdown(wait=False, cancel_futures=True)
-                    print(f"\n  Cap reached after {fetched:,} fetches this run. Will resume next run.")
+                    print(f"\n  Cap reached after {fetched:,} fetches this run.")
                     cap_reached = True
                     break
                     
@@ -296,44 +246,23 @@ with tqdm(total=len(missing_movies), desc="Movies", unit="req", disable=is_ci) a
                 fetched += 1
                 pbar.update(1)
                 
-            # Write chunk results to disk immediately, clearing batch
             if batch:
-                con.executemany("INSERT INTO movie_posters (tconst, poster_path) VALUES (?, ?)", batch)
-                con.execute("COPY movie_posters TO 'static/data/movie_posters.parquet' (FORMAT PARQUET, COMPRESSION 'ZSTD')")
-                if is_ci and fetched % 1000 == 0:
-                    print_ci_log(fetched, len(missing_movies), movie_start_time, movie_limit_mins)
-            
-            # Explicitly delete the dict of futures so Python garbage collects it immediately
+                con.executemany("INSERT INTO tmp_movies (tconst, poster_path) VALUES (?, ?)", batch)
+                con.execute("UPDATE movies SET poster_path = tmp.poster_path FROM tmp_movies tmp WHERE movies.tconst = tmp.tconst")
+                con.execute("DELETE FROM tmp_movies")
+                con.execute("COPY movies TO 'static/data/movies.parquet' (FORMAT PARQUET, COMPRESSION 'ZSTD')")
             del future_to_item
-            
-    # Free up memory before moving to actors
-    del missing_movies
 
-con.execute("COPY movie_posters TO 'static/data/movie_posters.parquet' (FORMAT PARQUET, COMPRESSION 'ZSTD')")
-total_m = con.execute("SELECT COUNT(*) FROM movie_posters").fetchone()[0]
-with_poster = con.execute("SELECT COUNT(*) FROM movie_posters WHERE poster_path IS NOT NULL").fetchone()[0]
-print(f"  -> movie_posters.parquet saved ({total_m:,} entries, {with_poster:,} with images).")
-
-# Step 4b: Actor Posters (1 hour cap)
+# 3b. Actors
 actor_limit_mins = int(os.environ.get('ACTOR_LIMIT_MINS', 150))
-print(f"\n4b: Fetching actor photos (cap: {actor_limit_mins} mins)...")
+print(f"\n3b: Fetching actor photos (cap: {actor_limit_mins} mins)...")
 actor_start_time = time.time()
 ACTOR_DEADLINE = actor_start_time + actor_limit_mins * 60
 
-try_load_existing_parquet(
-    con, 'actor_posters', 'actor_posters.parquet',
-    'nconst VARCHAR, profile_path VARCHAR'
-)
-
-missing_actors = con.execute("""
-    SELECT n.nconst
-    FROM names n
-    LEFT JOIN actor_posters ap ON n.nconst = ap.nconst
-    WHERE ap.nconst IS NULL
-    ORDER BY n.nconst
-""").fetchall()
-
+missing_actors = con.execute("SELECT nconst FROM actor_details WHERE profile_path IS NULL ORDER BY nconst").fetchall()
 print(f"  {len(missing_actors):,} actors still need photo lookup.", flush=True)
+con.execute("CREATE TABLE tmp_actors (nconst VARCHAR, profile_path VARCHAR)")
+
 fetched = 0
 with tqdm(total=len(missing_actors), desc="Actors", unit="req", disable=is_ci) as pbar:
     cap_reached = False
@@ -346,7 +275,7 @@ with tqdm(total=len(missing_actors), desc="Actors", unit="req", disable=is_ci) a
             for future in concurrent.futures.as_completed(future_to_item):
                 if time.time() > ACTOR_DEADLINE:
                     executor.shutdown(wait=False, cancel_futures=True)
-                    print(f"\n  Cap reached after {fetched:,} fetches this run. Will resume next run.")
+                    print(f"\n  Cap reached after {fetched:,} fetches this run.")
                     cap_reached = True
                     break
                     
@@ -356,18 +285,43 @@ with tqdm(total=len(missing_actors), desc="Actors", unit="req", disable=is_ci) a
                 pbar.update(1)
                 
             if batch:
-                con.executemany("INSERT INTO actor_posters (nconst, profile_path) VALUES (?, ?)", batch)
-                con.execute("COPY actor_posters TO 'static/data/actor_posters.parquet' (FORMAT PARQUET, COMPRESSION 'ZSTD')")
-                if is_ci and fetched % 1000 == 0:
-                    print_ci_log(fetched, len(missing_actors), actor_start_time, actor_limit_mins)
-            
+                con.executemany("INSERT INTO tmp_actors (nconst, profile_path) VALUES (?, ?)", batch)
+                con.execute("UPDATE actor_details SET profile_path = tmp.profile_path FROM tmp_actors tmp WHERE actor_details.nconst = tmp.nconst")
+                con.execute("DELETE FROM tmp_actors")
+                con.execute("COPY actor_details TO 'static/data/actor_details.parquet' (FORMAT PARQUET, COMPRESSION 'ZSTD')")
             del future_to_item
-            
-    del missing_actors
 
-con.execute("COPY actor_posters TO 'static/data/actor_posters.parquet' (FORMAT PARQUET, COMPRESSION 'ZSTD')")
-total_a = con.execute("SELECT COUNT(*) FROM actor_posters").fetchone()[0]
-with_photo = con.execute("SELECT COUNT(*) FROM actor_posters WHERE profile_path IS NOT NULL").fetchone()[0]
-print(f"  -> actor_posters.parquet saved ({total_a:,} entries, {with_photo:,} with images).")
+print("\n--- 4/4: Generating Metadata ---")
+def get_file_hash(filepath):
+    h = hashlib.sha256()
+    with open(filepath, 'rb') as f:
+        while chunk := f.read(8192):
+            h.update(chunk)
+    return h.hexdigest()
 
-print("\n--- Generation Complete ---")
+core_files = ['search_index.parquet', 'actor_details.parquet', 'movies.parquet']
+metadata = {"compiled_at": int(time.time()), "total_bytes": 0, "files": {}}
+for f in core_files:
+    filepath = f'static/data/{f}'
+    size = os.path.getsize(filepath)
+    metadata["files"][f] = {"size": size, "hash": get_file_hash(filepath)}
+    metadata["total_bytes"] += size
+
+with open('static/data/metadata.json', 'w') as mf:
+    json.dump(metadata, mf)
+
+print(f"  -> metadata.json written ({metadata['total_bytes'] / 1024 / 1024:.1f} MB total)")
+
+if is_ci:
+    print("\n--- Cleaning up temporary files ---")
+    files_to_delete = [
+        'title.basics.tsv.gz', 'title.ratings.tsv.gz', 
+        'title.principals.tsv.gz', 'name.basics.tsv.gz',
+        'old_movies.parquet', 'old_actor_details.parquet'
+    ]
+    for f in files_to_delete:
+        if os.path.exists(f):
+            os.remove(f)
+            print(f"  Deleted {f}")
+
+print("--- Generation Complete ---")
