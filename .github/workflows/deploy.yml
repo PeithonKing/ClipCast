@@ -25,7 +25,7 @@ on:
       - main
   # Automatically run on the 1st of every month to keep data fresh
   schedule:
-    - cron: '0 0 1 * *'
+    - cron: '28 23 * * 6'
 
 # Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
