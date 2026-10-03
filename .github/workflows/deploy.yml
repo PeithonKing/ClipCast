@@ -65,7 +65,7 @@ jobs:
           ACTOR_LIMIT_MINS: ${{ github.event.inputs.actor_limit_mins || '150' }}
         run: |
           mkdir -p static/data
-          uv run generate_db_migrate.py
+          uv run generate_db.py
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

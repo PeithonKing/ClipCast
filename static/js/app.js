@@ -22,6 +22,7 @@ const els = {
     chipsContainer: document.getElementById('chipsContainer'),
     movieResults: document.getElementById('movieResults'),
     statusText: document.getElementById('statusText'),
+    refreshDbLink: document.getElementById('refreshDbLink'),
     filterMovies: document.getElementById('filterMovies'),
     filterTV: document.getElementById('filterTV')
 };
@@ -82,8 +83,8 @@ function initFilters() {
 }
 
 // --- OPFS Silent Cache ---
+let remoteMeta = null;
 async function syncSearchIndex() {
-    let remoteMeta = null;
     try {
         const res = await fetch(getParquetUrl('metadata.json'));
         remoteMeta = await res.json();
@@ -93,18 +94,10 @@ async function syncSearchIndex() {
     const dir = await root.getDirectoryHandle(OPFS_DIR, { create: true });
     
     let needsDownload = true;
-    const localMetaStr = localStorage.getItem('clipcast_metadata');
-    
-    if (localMetaStr && remoteMeta) {
-        try {
-            const localMeta = JSON.parse(localMetaStr);
-            const ageSeconds = (Date.now() / 1000) - localMeta.compiled_at;
-            if (ageSeconds < 2592000 && localMeta.files[SEARCH_INDEX] && localMeta.files[SEARCH_INDEX].hash === remoteMeta.files[SEARCH_INDEX].hash) {
-                await dir.getFileHandle(SEARCH_INDEX, { create: false });
-                needsDownload = false;
-            }
-        } catch (e) {}
-    }
+    try {
+        await dir.getFileHandle(SEARCH_INDEX, { create: false });
+        needsDownload = false;
+    } catch (e) {}
 
     if (needsDownload) {
         els.statusText.innerText = 'Syncing offline search cache...';
@@ -158,18 +151,50 @@ async function initDB() {
 
         await syncSearchIndex();
 
-        els.statusText.innerText = 'Ready. Search for actors.';
+        let readyText = 'Ready. Search for actors.';
+        const localMetaStr = localStorage.getItem('clipcast_metadata');
+        let isOutdated = false;
+        
+        if (localMetaStr) {
+            try {
+                const localMeta = JSON.parse(localMetaStr);
+                const unixTs = localMeta.compiled_at;
+                if (unixTs) {
+                    const dateStr = new Date(unixTs * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+                    readyText = `Local Database: ${dateStr}`;
+                    const el = document.getElementById('dbTimestamp');
+                    if (el) el.innerText = `Database last updated: ${dateStr}`;
+                }
+                
+                if (remoteMeta && remoteMeta.compiled_at !== localMeta.compiled_at) {
+                    isOutdated = true;
+                }
+            } catch (e) {}
+        }
+        els.statusText.innerText = readyText;
+        
+        if (isOutdated) {
+            els.refreshDbLink.innerText = 'Update Local Database';
+        } else {
+            els.refreshDbLink.innerText = 'Refresh Local Database';
+        }
+        
+        els.refreshDbLink.style.display = 'inline-block';
+        els.refreshDbLink.addEventListener('click', async (e) => {
+            e.preventDefault();
+            if (confirm("This will clear the cached database and download a fresh ~30MB copy from the server. Proceed?")) {
+                try {
+                    const root = await navigator.storage.getDirectory();
+                    const dir = await root.getDirectoryHandle(OPFS_DIR, { create: false });
+                    await dir.removeEntry(SEARCH_INDEX);
+                    localStorage.removeItem('clipcast_metadata');
+                } catch (err) {}
+                window.location.reload();
+            }
+        });
+        
         els.searchBox.disabled = false;
         els.searchBox.focus();
-        
-        const localMetaStr = localStorage.getItem('clipcast_metadata');
-        if (localMetaStr) {
-            const unixTs = JSON.parse(localMetaStr).compiled_at;
-            const el = document.getElementById('dbTimestamp');
-            if (el && unixTs) {
-                el.innerText = `Database last updated: ${new Date(unixTs * 1000).toLocaleDateString()}`;
-            }
-        }
 
         await loadFromUrl();
     } catch (e) {
