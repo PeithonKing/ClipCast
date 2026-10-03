@@ -21,29 +21,32 @@ os.makedirs('static/data', exist_ok=True)
 
 def download_file(url, filename):
     if os.path.exists(filename):
-        print(f"  [CACHE] {filename} already exists. Skipping download.")
+        print(f"  [CACHE] {filename} already exists. Skipping download.", flush=True)
         return
     
-    print(f"  [DOWNLOADING] {url} -> {filename}")
+    print(f"  [DOWNLOADING] {url} -> {filename}", flush=True)
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req) as response:
-            total_size = int(response.headers.get('content-length', 0))
+        import requests
+        headers = {
+            'User-Agent': 'ClipCast-CI/1.0',
+            'Accept': '*/*'
+        }
+        with requests.get(url, headers=headers, stream=True, timeout=30) as r:
+            r.raise_for_status()
+            total_size = int(r.headers.get('content-length', 0))
             with open(filename, 'wb') as file, tqdm(
                 desc=filename,
                 total=total_size,
                 unit='iB',
                 unit_scale=True,
                 unit_divisor=1024,
+                disable=is_ci
             ) as bar:
-                while True:
-                    chunk = response.read(8192)
-                    if not chunk:
-                        break
+                for chunk in r.iter_content(chunk_size=8192):
                     file.write(chunk)
                     bar.update(len(chunk))
     except Exception as e:
-        print(f"  [ERROR] Failed to download {url}: {e}")
+        print(f"  [ERROR] Failed to download {url}: {e}", flush=True)
         raise
 
 # 1. Download IMDB TSV.GZ files
