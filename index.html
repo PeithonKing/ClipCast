@@ -57,7 +57,10 @@
         <header>
             <h1>Clipcast</h1>
             <p class="tagline">Saw a clip, don't know the movie?<br>Type the actors you recognise and we'll find it.</p>
-            <p id="statusText" class="status">Loading Engine...</p>
+            <div class="status-container" style="display: flex; align-items: center; justify-content: center; gap: 10px;">
+                <p id="statusText" class="status" style="margin: 0;">Loading Engine...</p>
+                <a href="#" id="refreshDbLink" style="display: none; font-size: 0.85rem; color: var(--text-muted); text-decoration: underline; cursor: pointer;">Refresh Local Database</a>
+            </div>
         </header>
 
         <main>
