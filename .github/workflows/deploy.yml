@@ -65,12 +65,7 @@ jobs:
           ACTOR_LIMIT_MINS: ${{ github.event.inputs.actor_limit_mins || '150' }}
         run: |
           mkdir -p static/data
-          bash download_data.sh
-
-      - name: Clean up Raw Data
-        run: |
-          echo "Removing heavy .gz files before uploading to Pages..."
-          rm *.tsv.gz
+          uv run generate_db_migrate.py
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

@@ -46,13 +46,11 @@ The JW score is cubed to aggressively punish loose matches. Popularity is derive
 ## Local Development
 
 ```bash
-# Step 1: Download data and generate the Parquet databases
-./download_data.sh
+# Step 1: Generate the Parquet databases locally
+uv run generate_db.py
 
 # Step 2: Serve the app (DuckDB-Wasm requires HTTP, not file://)
 python3 -m http.server 8000
 ```
 
 Open `http://localhost:8000`.
-
-> **uv users:** `uv run generate_db.py` works directly without setting up a virtual environment.
