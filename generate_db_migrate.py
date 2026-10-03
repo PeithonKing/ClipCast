@@ -2,7 +2,6 @@
 # requires-python = ">=3.11"
 # dependencies = [
 #     "duckdb",
-#     "requests",
 #     "tqdm",
 # ]
 # ///
@@ -21,19 +20,14 @@ os.makedirs('static/data', exist_ok=True)
 
 def download_file(url, filename):
     if os.path.exists(filename):
-        print(f"  [CACHE] {filename} already exists. Skipping download.", flush=True)
+        print(f"  [CACHE] {filename} already exists.", flush=True)
         return
     
     print(f"  [DOWNLOADING] {url} -> {filename}", flush=True)
     try:
-        import requests
-        headers = {
-            'User-Agent': 'ClipCast-CI/1.0',
-            'Accept': '*/*'
-        }
-        with requests.get(url, headers=headers, stream=True, timeout=30) as r:
-            r.raise_for_status()
-            total_size = int(r.headers.get('content-length', 0))
+        req = urllib.request.Request(url, headers={'User-Agent': 'ClipCast-CI/1.0'})
+        with urllib.request.urlopen(req, timeout=30) as response:
+            total_size = int(response.headers.get('content-length', 0))
             with open(filename, 'wb') as file, tqdm(
                 desc=filename,
                 total=total_size,
@@ -42,7 +36,10 @@ def download_file(url, filename):
                 unit_divisor=1024,
                 disable=is_ci
             ) as bar:
-                for chunk in r.iter_content(chunk_size=8192):
+                while True:
+                    chunk = response.read(8192)
+                    if not chunk:
+                        break
                     file.write(chunk)
                     bar.update(len(chunk))
     except Exception as e:
