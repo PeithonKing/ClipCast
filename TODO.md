@@ -1,9 +1,9 @@
 # Clipcast Future Roadmap (TODO)
 
 ## 1. Deep Linking (Shareable URLs)
-- [ ] Automatically update the browser URL to include query parameters when actors are selected (e.g., `?actors=nm00001,nm00002`).
-- [ ] On page load, read the URL parameters and instantly populate the actor chips and run the intersection query.
-- [ ] **Benefit:** Users can copy-paste URLs to share specific actor combinations with friends.
+- [x] Automatically update the browser URL to include query parameters when actors are selected (e.g., `?actors=nm00001,nm00002`).
+- [x] On page load, read the URL parameters and instantly populate the actor chips and run the intersection query.
+- [x] **Benefit:** Users can copy-paste URLs to share specific actor combinations with friends.
 
 ## 2. Search History (Offcanvas Drawer)
 - [ ] Persist completed searches (arrays of actor IDs + names) to browser `localStorage`.
